@@ -115,7 +115,7 @@ was still chosen as phase 1 despite the extra platform lift.
 | `adminOnly`                         | omitted (`false`)                                            |
 | `icon`                              | `icon.svg`                                                   |
 | `permissions`                       | `auth:session`, `db:readWrite`                                |
-| `repository`                        | `https://github.com/sovereignfs/sovereign-wallet`             |
+| `repository`                        | `https://github.com/sovereignfs/sovereign-plugin-wallet`             |
 | `compatibility.minPlatformVersion`  | `0.19.0` (raised once RFC 0060 + RFC 0044 land — see roadmap) |
 
 `id: fs.sovereign.wallet` replaces the original proposal's
@@ -142,7 +142,7 @@ Proposed `manifest.json`:
   },
   "icon": "icon.svg",
   "permissions": ["auth:session", "db:readWrite"],
-  "repository": "https://github.com/sovereignfs/sovereign-wallet",
+  "repository": "https://github.com/sovereignfs/sovereign-plugin-wallet",
   "compatibility": { "minPlatformVersion": "0.19.0" }
 }
 ```

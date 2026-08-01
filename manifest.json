@@ -21,7 +21,7 @@
     "data:export",
     "data:import"
   ],
-  "repository": "https://github.com/sovereignfs/sovereign-wallet",
+  "repository": "https://github.com/sovereignfs/sovereign-plugin-wallet",
   "compatibility": {
     "minPlatformVersion": "0.24.0"
   }

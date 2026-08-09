@@ -26,6 +26,6 @@ CREATE TABLE "wallet_items" (
 	"updated_at" integer NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "wallet_card_payloads" ADD CONSTRAINT "wallet_card_payloads_item_id_wallet_items_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."wallet_items"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "wallet_card_payloads" ADD CONSTRAINT "wallet_card_payloads_item_id_wallet_items_id_fk" FOREIGN KEY ("item_id") REFERENCES "wallet_items"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "wallet_card_payloads_item_idx" ON "wallet_card_payloads" USING btree ("item_id");--> statement-breakpoint
 CREATE INDEX "wallet_items_tenant_owner_idx" ON "wallet_items" USING btree ("tenant_id","owner_user_id");

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "fs.sovereign.wallet",
   "name": "Wallet",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "A private wallet for loyalty cards, encrypted documents, and personal financial records.",
   "type": "sovereign",
   "runtime": "native",

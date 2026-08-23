@@ -1,4 +1,4 @@
-import { EmptyState, PageHeader } from '@sovereignfs/ui';
+import { EmptyState, PageContainer, PageHeader } from '@sovereignfs/ui';
 import { DocumentUploadGate, EncryptionRequiredNotice } from '../_components/DocumentUploadGate';
 import { DocumentsListView } from '../_components/DocumentsListView';
 import { listDocuments } from '../_lib/documentActions';
@@ -8,7 +8,7 @@ export default async function DocumentsPage() {
   const documents = await listDocuments();
 
   return (
-    <div className={styles.page}>
+    <PageContainer maxWidth="md" className={styles.page}>
       <PageHeader
         title="Documents"
         description="Sensitive documents, always encrypted client-side."
@@ -25,6 +25,6 @@ export default async function DocumentsPage() {
       ) : (
         <DocumentsListView documents={documents} />
       )}
-    </div>
+    </PageContainer>
   );
 }

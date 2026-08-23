@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation';
+import { PageContainer } from '@sovereignfs/ui';
 import { BackLink } from '../../_components/BackLink';
 import { DocumentDetailView } from '../../_components/DocumentDetailView';
 import { getDocument } from '../../_lib/documentActions';
@@ -14,9 +15,9 @@ export default async function DocumentDetailPage({
   if (!document) notFound();
 
   return (
-    <div className={styles.page}>
+    <PageContainer maxWidth="sm" className={styles.page}>
       <BackLink href="/wallet/documents">Back to documents</BackLink>
       <DocumentDetailView document={document} />
-    </div>
+    </PageContainer>
   );
 }

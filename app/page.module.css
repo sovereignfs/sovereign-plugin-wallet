@@ -1,6 +1,4 @@
 .page {
-  padding: var(--sv-space-8) var(--sv-space-6);
-  max-width: 960px;
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-6);

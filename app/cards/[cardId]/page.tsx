@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation';
+import { PageContainer } from '@sovereignfs/ui';
 import { BackLink } from '../../_components/BackLink';
 import { CardDetailView } from '../../_components/CardDetailView';
 import { getCard } from '../../_lib/actions';
@@ -14,9 +15,9 @@ export default async function CardDetailPage({
   if (!card) notFound();
 
   return (
-    <div className={styles.page}>
+    <PageContainer maxWidth="sm" className={styles.page}>
       <BackLink href="/wallet/cards">Back to cards</BackLink>
       <CardDetailView card={card} />
-    </div>
+    </PageContainer>
   );
 }

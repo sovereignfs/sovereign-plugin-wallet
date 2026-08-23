@@ -1,4 +1,4 @@
-import { EmptyState, PageHeader } from '@sovereignfs/ui';
+import { EmptyState, PageContainer, PageHeader } from '@sovereignfs/ui';
 import { CardsListView } from '../_components/CardsListView';
 import { NewCardDialog } from '../_components/NewCardDialog';
 import { listCards } from '../_lib/actions';
@@ -8,7 +8,7 @@ export default async function CardsPage() {
   const cards = await listCards();
 
   return (
-    <div className={styles.page}>
+    <PageContainer maxWidth="md" className={styles.page}>
       <PageHeader
         title="Cards"
         description="Loyalty and membership cards."
@@ -24,6 +24,6 @@ export default async function CardsPage() {
       ) : (
         <CardsListView cards={cards} />
       )}
-    </div>
+    </PageContainer>
   );
 }

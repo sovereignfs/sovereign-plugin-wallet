@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Card, EmptyState, PageHeader } from '@sovereignfs/ui';
+import { Card, EmptyState, PageContainer, PageHeader } from '@sovereignfs/ui';
 import { getWalletItemCounts } from './_lib/counts';
 import styles from './page.module.css';
 
@@ -8,7 +8,7 @@ export default async function WalletPage() {
   const isEmpty = counts.cards === 0 && counts.documents === 0;
 
   return (
-    <div className={styles.page}>
+    <PageContainer maxWidth="md" className={styles.page}>
       <PageHeader title="Wallet" description="Your loyalty cards and sensitive documents." />
 
       {isEmpty && (
@@ -39,6 +39,6 @@ export default async function WalletPage() {
           </Card>
         </Link>
       </section>
-    </div>
+    </PageContainer>
   );
 }

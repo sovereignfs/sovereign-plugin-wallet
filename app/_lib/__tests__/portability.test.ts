@@ -432,3 +432,117 @@ describe('portability delete', () => {
     expect(result?.errors).toBeUndefined();
   });
 });
+
+describe('portability import — validating an untrusted bundle', () => {
+  /** A bundle whose card list is structurally wrong in one specific way. */
+  function sectionWithCard(card: unknown): PluginExportSection {
+    return {
+      pluginId: 'fs.sovereign.wallet',
+      schemaVersion: 1,
+      data: { cards: [card], documents: [] },
+      blobs: {},
+    };
+  }
+
+  const ctx: ImportContext = {
+    userId: 'user-2',
+    tenantId: 't1',
+    remapId: (id: string) => `new-${id}`,
+  };
+
+  it.each([
+    ['a missing id', { payload: '1234', payloadEncrypted: false, createdAt: 1, updatedAt: 1 }],
+    ['a non-string payload', { id: 'c', payload: 42, payloadEncrypted: false, createdAt: 1, updatedAt: 1 }],
+    ['a missing payload', { id: 'c', payloadEncrypted: false, createdAt: 1, updatedAt: 1 }],
+    ['non-numeric timestamps', { id: 'c', payload: 'x', payloadEncrypted: false, createdAt: 'y', updatedAt: 'z' }],
+    ['a null entry', null],
+  ])('skips a card with %s rather than inserting it', async (_label, card) => {
+    const { registerPortabilityHandlers } = await import('../portability');
+    await registerPortabilityHandlers();
+
+    // A bundle is user-supplied input from another instance. Import runs
+    // without a transaction, so a malformed row must be skipped, not thrown
+    // on — throwing partway leaves half a wallet restored.
+    await expect(capturedImporter.fn?.(sectionWithCard(card), ctx)).resolves.toBeUndefined();
+    expect(store.wallet_items).toHaveLength(0);
+    expect(store.wallet_card_payloads).toHaveLength(0);
+  });
+
+  it('imports the valid cards in a bundle that also contains a malformed one', async () => {
+    const { registerPortabilityHandlers } = await import('../portability');
+    await registerPortabilityHandlers();
+
+    const section: PluginExportSection = {
+      pluginId: 'fs.sovereign.wallet',
+      schemaVersion: 1,
+      data: {
+        cards: [
+          { id: 'bad' },
+          {
+            id: 'good',
+            encrypted: false,
+            encryptedMetadata: JSON.stringify({ title: 'Keeps', issuer: '', notes: '' }),
+            encryptionVersion: null,
+            wrappedDek: null,
+            barcodeFormat: 'qr',
+            payloadEncrypted: false,
+            payload: '1234',
+            frontImageBlobPath: null,
+            backImageBlobPath: null,
+            frontImageMeta: null,
+            backImageMeta: null,
+            createdAt: 10,
+            updatedAt: 10,
+          },
+        ],
+        documents: [],
+      },
+      blobs: {},
+    };
+
+    await capturedImporter.fn?.(section, ctx);
+
+    expect(store.wallet_items).toHaveLength(1);
+    expect(store.wallet_items[0]).toMatchObject({ id: 'new-good' });
+  });
+
+  it('degrades a bundle-declared script content type to an opaque one', async () => {
+    const { registerPortabilityHandlers } = await import('../portability');
+    await registerPortabilityHandlers();
+
+    const section: PluginExportSection = {
+      pluginId: 'fs.sovereign.wallet',
+      schemaVersion: 1,
+      data: {
+        cards: [
+          {
+            id: 'src',
+            encrypted: false,
+            encryptedMetadata: JSON.stringify({ title: 'x', issuer: '', notes: '' }),
+            encryptionVersion: null,
+            wrappedDek: null,
+            barcodeFormat: 'qr',
+            payloadEncrypted: false,
+            payload: '1234',
+            frontImageBlobPath: 'cards/src/front',
+            backImageBlobPath: null,
+            // A crafted bundle can name any content type; storing it would
+            // serve attacker HTML from the runtime's own origin.
+            frontImageMeta: { contentType: 'text/html', iv: null, blobAlgorithmVersion: null },
+            backImageMeta: null,
+            createdAt: 10,
+            updatedAt: 10,
+          },
+        ],
+        documents: [],
+      },
+      blobs: { 'cards/src/front': new Uint8Array([1]) },
+    };
+
+    await capturedImporter.fn?.(section, ctx);
+
+    expect(storagePut).toHaveBeenCalledWith(
+      expect.objectContaining({ contentType: 'application/octet-stream' }),
+    );
+  });
+});

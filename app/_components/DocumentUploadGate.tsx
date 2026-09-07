@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { Icon } from '@sovereignfs/ui';
 import type { E2eeState } from '@sovereignfs/sdk';
 import { useE2eeUnlock } from '../_lib/useE2eeUnlock';
 import { NewDocumentDialog } from './NewDocumentDialog';
@@ -46,8 +47,8 @@ export function EncryptionRequiredNotice() {
 
   return (
     <div className={styles.blocked}>
-      <span className={styles.icon} aria-hidden="true">
-        🔒
+      <span className={styles.icon}>
+        <Icon name="lock" aria-hidden />
       </span>
       <div className={styles.text}>
         <p className={styles.message}>{blockedMessage(unlock.state)}</p>

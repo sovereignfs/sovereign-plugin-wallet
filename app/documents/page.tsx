@@ -18,9 +18,9 @@ export default async function DocumentsPage() {
 
       {documents.length === 0 ? (
         <EmptyState
-          icon="package"
+          icon="file-text"
           heading="No documents yet"
-          description="Add your first sensitive document."
+          description="Store an encrypted copy of a passport, licence or permit — readable only on your unlocked devices."
         />
       ) : (
         <DocumentsListView documents={documents} />

@@ -22,10 +22,20 @@
 }
 
 .categoryTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
   font-size: var(--sv-font-size-lg);
   font-weight: 600;
   color: var(--sv-color-text-primary);
   margin: 0;
+}
+
+.emptyAction {
+  font-size: var(--sv-font-size-sm);
+  font-weight: 600;
+  color: var(--sv-color-text-primary);
+  text-decoration: underline;
 }
 
 .categoryCount {

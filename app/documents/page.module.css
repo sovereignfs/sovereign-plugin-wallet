@@ -22,8 +22,27 @@
 }
 
 .documentTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
   font-size: var(--sv-font-size-md);
   font-weight: 600;
   color: var(--sv-color-text-primary);
+  margin: 0;
+}
+
+.documentSubtitle {
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-muted);
+  margin: 0;
+}
+
+.search {
+  max-width: 320px;
+}
+
+.noMatches {
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-muted);
   margin: 0;
 }

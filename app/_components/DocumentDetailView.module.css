@@ -39,3 +39,24 @@
   gap: var(--sv-space-2);
   justify-content: flex-end;
 }
+
+.encryptedBadge {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-muted);
+  margin: 0;
+}
+
+/* Pending states replace the card body, so they hold height while the
+   ciphertext is fetched and decrypted. */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sv-space-3);
+  min-height: 200px;
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-muted);
+}

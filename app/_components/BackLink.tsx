@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
+import { Icon } from '@sovereignfs/ui';
 import styles from './BackLink.module.css';
 
 /** Same pattern as Plainwrite's BackLink — a card/document detail page has no
@@ -7,7 +8,7 @@ import styles from './BackLink.module.css';
 export function BackLink({ href, children }: { href: string; children: ReactNode }) {
   return (
     <Link href={href} className={styles.backLink}>
-      <span aria-hidden="true">←</span>
+      <Icon name="chevron-left" size="sm" aria-hidden />
       {children}
     </Link>
   );

@@ -1,68 +1,123 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Card } from '@sovereignfs/ui';
+import { Card, Icon, Input } from '@sovereignfs/ui';
 import { unwrapDekWithCmk } from '@sovereignfs/sdk/e2ee-crypto';
 import { decryptJson } from '@sovereignfs/sdk/e2ee-object';
 import type { DocumentListItem } from '../_lib/documentActions';
+import { documentTypeLabel, normalizeDocumentMetadata } from '../_lib/documentMetadata';
+import type { DocumentMetadata } from '../_lib/documentMetadata';
 import { useE2eeUnlock } from '../_lib/useE2eeUnlock';
 import styles from '../documents/page.module.css';
 
-interface DecryptedDocumentMeta {
+interface ResolvedDocument {
+  doc: DocumentListItem;
   title: string;
+  subtitle: string;
+  locked: boolean;
 }
 
-/**
- * Decrypts and shows just the title for one document tile — never
- * notes/filename/content-type, which stay hidden until the detail page.
- * Falls back to the generic locked label if decryption fails.
- */
-function EncryptedDocumentTile({ document: doc, cmk }: { document: DocumentListItem; cmk: CryptoKey }) {
-  const [title, setTitle] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+function addedOn(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+export function DocumentsListView({ documents }: { documents: DocumentListItem[] }) {
+  const { state, cmk } = useE2eeUnlock();
+  const [decrypted, setDecrypted] = useState<Record<string, DocumentMetadata>>({});
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
-    const cipher = doc.cipher;
+    if (state !== 'unlocked' || !cmk) return;
     let cancelled = false;
     void (async () => {
-      try {
-        const dek = await unwrapDekWithCmk(cipher.wrappedDek, cmk);
-        const meta = await decryptJson<DecryptedDocumentMeta>(dek, cipher.encryptedMetadata);
-        if (!cancelled) setTitle(meta.title);
-      } catch {
-        if (!cancelled) setFailed(true);
+      const entries: Array<[string, DocumentMetadata]> = [];
+      for (const doc of documents) {
+        try {
+          const dek = await unwrapDekWithCmk(doc.cipher.wrappedDek, cmk);
+          const meta = await decryptJson<Partial<DocumentMetadata>>(dek, doc.cipher.encryptedMetadata);
+          entries.push([doc.id, normalizeDocumentMetadata(meta)]);
+        } catch {
+          // One unreadable document must not hide the rest.
+        }
       }
+      if (!cancelled && entries.length > 0) setDecrypted(Object.fromEntries(entries));
     })();
     return () => {
       cancelled = true;
     };
-  }, [doc, cmk]);
+  }, [documents, state, cmk]);
 
-  if (failed || !title) {
-    return <h2 className={styles.documentTitle}>🔒 Encrypted document</h2>;
-  }
+  const resolved = useMemo<ResolvedDocument[]>(
+    () =>
+      documents.map((doc) => {
+        const meta = decrypted[doc.id];
+        if (!meta) {
+          return {
+            doc,
+            title: 'Encrypted document',
+            subtitle: `Added ${addedOn(doc.createdAt)}`,
+            locked: true,
+          };
+        }
+        const type = meta.documentType ? documentTypeLabel(meta.documentType) : '';
+        return {
+          doc,
+          title: meta.title || 'Untitled document',
+          subtitle: [type, meta.issuer].filter(Boolean).join(' · ') || `Added ${addedOn(doc.createdAt)}`,
+          locked: false,
+        };
+      }),
+    [documents, decrypted],
+  );
 
-  return <h2 className={styles.documentTitle}>🔒 {title}</h2>;
-}
-
-/** Document list grid. Calls `useE2eeUnlock()` once and shares the result across every tile. */
-export function DocumentsListView({ documents }: { documents: DocumentListItem[] }) {
-  const unlock = useE2eeUnlock();
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return resolved;
+    return resolved.filter(
+      ({ title, subtitle, locked }) =>
+        !locked &&
+        (title.toLowerCase().includes(needle) || subtitle.toLowerCase().includes(needle)),
+    );
+  }, [resolved, query]);
 
   return (
-    <section className={styles.documentGrid} aria-label="Documents">
-      {documents.map((doc) => (
-        <Link key={doc.id} href={`/wallet/documents/${doc.id}`} className={styles.documentLink}>
-          <Card interactive className={styles.documentTile}>
-            {unlock.state === 'unlocked' && unlock.cmk ? (
-              <EncryptedDocumentTile document={doc} cmk={unlock.cmk} />
-            ) : (
-              <h2 className={styles.documentTitle}>🔒 Encrypted document</h2>
-            )}
-          </Card>
-        </Link>
-      ))}
-    </section>
+    <>
+      {documents.length > 4 && (
+        <div className={styles.search}>
+          <Input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            placeholder="Search documents"
+            aria-label="Search documents"
+          />
+        </div>
+      )}
+
+      {visible.length === 0 ? (
+        <p className={styles.noMatches} role="status" aria-live="polite">
+          No documents match “{query}”. Documents that are still locked can&rsquo;t be searched.
+        </p>
+      ) : (
+        <section className={styles.documentGrid} aria-label="Documents">
+          {visible.map(({ doc, title, subtitle }) => (
+            <Link key={doc.id} href={`/wallet/documents/${doc.id}`} className={styles.documentLink}>
+              <Card interactive className={styles.documentTile}>
+                <h2 className={styles.documentTitle}>
+                  <Icon name="lock" size="sm" aria-hidden />
+                  {title}
+                </h2>
+                <p className={styles.documentSubtitle}>{subtitle}</p>
+              </Card>
+            </Link>
+          ))}
+        </section>
+      )}
+    </>
   );
 }

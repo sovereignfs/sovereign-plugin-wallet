@@ -1,0 +1,5 @@
+.root {
+  margin: 0;
+  font-size: var(--sv-font-size-xs);
+  color: var(--sv-color-text-subtle);
+}

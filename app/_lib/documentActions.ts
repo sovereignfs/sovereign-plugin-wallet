@@ -3,17 +3,17 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
-import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { sdk } from '@sovereignfs/sdk';
 import { walletItems } from '../_db/schema';
 import type { EncryptedField, WrappedDekField } from './actions';
-import { formString, now } from './formUtils';
+import { formString, now, parseJsonOrNull } from './formUtils';
+import { ACTION_OK, guarded } from './actionResult';
+import type { ActionResult, CreateResult } from './actionResult';
+import { MAX_DOCUMENT_BYTES, OPAQUE_CONTENT_TYPE, tooLargeMessage } from './mediaTypes';
 
-// DrizzleClient is typed as `unknown` in the SDK (dialect-agnostic contract).
-// We cast to the SQLite type here since this plugin's manifest resolves to SQLite only.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Db = BaseSQLiteDatabase<'async', any, any>;
+/** See the same note in `actions.ts` — this cast is correct on both dialects. */
+type Db = BaseSQLiteDatabase<'async', unknown>;
 
 /**
  * Sensitive documents (SPEC: "client-side encrypted object required" — unlike
@@ -24,6 +24,7 @@ type Db = BaseSQLiteDatabase<'async', any, any>;
  */
 export interface DocumentListItem {
   id: string;
+  createdAt: number;
   updatedAt: number;
   /** Opaque ciphertext so the list view can decrypt the title client-side (RFC 0060) — the server never decrypts. */
   cipher: {
@@ -36,6 +37,8 @@ export interface DocumentDetail {
   id: string;
   createdAt: number;
   updatedAt: number;
+  /** Ciphertext byte length, for showing a size without decrypting. */
+  sizeBytes: number;
   wrappedDek: WrappedDekField;
   encryptedMetadata: EncryptedField;
   /** IV + algorithm version for the storage object's ciphertext (`sdk.storage` metadata). */
@@ -59,6 +62,7 @@ export async function listDocuments(): Promise<DocumentListItem[]> {
       id: walletItems.id,
       encryptedMetadata: walletItems.encryptedMetadata,
       wrappedDek: walletItems.wrappedDek,
+      createdAt: walletItems.createdAt,
       updatedAt: walletItems.updatedAt,
     })
     .from(walletItems)
@@ -73,14 +77,14 @@ export async function listDocuments(): Promise<DocumentListItem[]> {
 
   const items: DocumentListItem[] = [];
   for (const row of rows) {
-    if (!row.encryptedMetadata || !row.wrappedDek) continue;
+    const encryptedMetadata = parseJsonOrNull<EncryptedField>(row.encryptedMetadata);
+    const wrappedDek = parseJsonOrNull<WrappedDekField>(row.wrappedDek);
+    if (!encryptedMetadata || !wrappedDek) continue;
     items.push({
       id: row.id,
+      createdAt: row.createdAt,
       updatedAt: row.updatedAt,
-      cipher: {
-        encryptedMetadata: JSON.parse(row.encryptedMetadata) as EncryptedField,
-        wrappedDek: JSON.parse(row.wrappedDek) as WrappedDekField,
-      },
+      cipher: { encryptedMetadata, wrappedDek },
     });
   }
   return items;
@@ -110,12 +114,15 @@ export async function getDocument(id: string): Promise<DocumentDetail | null> {
     .limit(1);
 
   const row = rows[0];
-  if (!row || !row.storageObjectKey || !row.wrappedDek || !row.encryptedMetadata) return null;
+  if (!row?.storageObjectKey) return null;
+  const encryptedMetadata = parseJsonOrNull<EncryptedField>(row.encryptedMetadata);
+  const wrappedDek = parseJsonOrNull<WrappedDekField>(row.wrappedDek);
+  if (!encryptedMetadata || !wrappedDek) return null;
 
   const object = await sdk.storage.get(row.storageObjectKey);
   if (!object) return null;
-  const blobMeta = object.metadata as { iv: string; blobAlgorithmVersion: string } | null;
-  if (!blobMeta) return null;
+  const blobMeta = object.metadata as { iv?: string; blobAlgorithmVersion?: string } | null;
+  if (!blobMeta?.iv || !blobMeta.blobAlgorithmVersion) return null;
 
   const downloadUrl = await sdk.storage.getSignedUrl(row.storageObjectKey, {
     expiresInSeconds: 300,
@@ -125,96 +132,139 @@ export async function getDocument(id: string): Promise<DocumentDetail | null> {
     id: row.id,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    wrappedDek: JSON.parse(row.wrappedDek) as WrappedDekField,
-    encryptedMetadata: JSON.parse(row.encryptedMetadata) as EncryptedField,
+    sizeBytes: object.size,
+    wrappedDek,
+    encryptedMetadata,
     blobIv: blobMeta.iv,
     blobAlgorithmVersion: blobMeta.blobAlgorithmVersion,
     downloadUrl,
   };
 }
 
-export async function createDocument(formData: FormData) {
-  const { db, userId, tenantId } = await getContext();
+export async function createDocument(formData: FormData): Promise<CreateResult> {
+  return guarded(async () => {
+    const { db, userId, tenantId } = await getContext();
 
-  const ciphertext = formData.get('ciphertext');
-  const iv = formString(formData, 'blobIv');
-  const blobAlgorithmVersion = formString(formData, 'blobAlgorithmVersion');
-  const encryptedMetadata = formString(formData, 'encryptedMetadata');
-  const wrappedDekRaw = formString(formData, 'wrappedDek');
-  if (
-    !(ciphertext instanceof Blob) ||
-    !iv ||
-    !blobAlgorithmVersion ||
-    !encryptedMetadata ||
-    !wrappedDekRaw
-  ) {
-    throw new Error('Missing encrypted document data.');
-  }
-  const wrappedDek = JSON.parse(wrappedDekRaw) as WrappedDekField;
+    const ciphertext = formData.get('ciphertext');
+    const iv = formString(formData, 'blobIv');
+    const blobAlgorithmVersion = formString(formData, 'blobAlgorithmVersion');
+    const encryptedMetadata = formString(formData, 'encryptedMetadata');
+    const wrappedDek = parseJsonOrNull<WrappedDekField>(formString(formData, 'wrappedDek'));
+    if (
+      !(ciphertext instanceof Blob) ||
+      ciphertext.size === 0 ||
+      !iv ||
+      !blobAlgorithmVersion ||
+      !encryptedMetadata ||
+      !wrappedDek?.algorithmVersion
+    ) {
+      return { ok: false as const, error: 'This document could not be encrypted. Please try again.' };
+    }
+    if (ciphertext.size > MAX_DOCUMENT_BYTES) {
+      return { ok: false as const, error: tooLargeMessage(ciphertext.size, MAX_DOCUMENT_BYTES) };
+    }
 
-  const key = `documents/${randomUUID()}`;
-  await sdk.storage.put({
-    key,
-    body: ciphertext,
-    // Never the real content type — that's inside the encrypted metadata.
-    contentType: 'application/octet-stream',
-    ownerUserId: userId,
-    metadata: { iv, blobAlgorithmVersion },
-  });
+    const key = `documents/${randomUUID()}`;
+    await sdk.storage.put({
+      key,
+      body: ciphertext,
+      // Never the real content type — that's inside the encrypted metadata.
+      contentType: OPAQUE_CONTENT_TYPE,
+      ownerUserId: userId,
+      metadata: { iv, blobAlgorithmVersion },
+    });
 
-  const itemId = randomUUID();
-  const ts = now();
-  await db.insert(walletItems).values({
-    id: itemId,
-    tenantId,
-    ownerUserId: userId,
-    kind: 'document',
-    storageObjectKey: key,
-    encryptionVersion: wrappedDek.algorithmVersion,
-    encryptedMetadata,
-    wrappedDek: wrappedDekRaw,
-    createdAt: ts,
-    updatedAt: ts,
-  });
+    const itemId = randomUUID();
+    const ts = now();
+    try {
+      await db.insert(walletItems).values({
+        id: itemId,
+        tenantId,
+        ownerUserId: userId,
+        kind: 'document',
+        // Coarse plaintext hint only — never the document type, which stays
+        // inside the encrypted metadata (SPEC metadata minimization).
+        kindHint: 'document',
+        storageObjectKey: key,
+        encryptionVersion: wrappedDek.algorithmVersion,
+        encryptedMetadata,
+        wrappedDek: JSON.stringify(wrappedDek),
+        createdAt: ts,
+        updatedAt: ts,
+      });
+    } catch (error) {
+      // Don't leave the ciphertext behind if the row never landed.
+      await sdk.storage.delete(key).catch(() => undefined);
+      throw error;
+    }
 
-  revalidatePath('/wallet');
-  revalidatePath('/wallet/documents');
-  redirect(`/wallet/documents/${itemId}`);
+    revalidatePath('/wallet');
+    revalidatePath('/wallet/documents');
+    return { ok: true as const, id: itemId };
+  }, 'This document could not be saved. Please try again.');
 }
 
-export async function deleteDocument(id: string) {
-  const { db, userId, tenantId } = await getContext();
+/**
+ * Re-encrypted metadata for an existing document. The ciphertext blob and its
+ * wrapped DEK are untouched — only the metadata is re-sealed (client-side,
+ * under the same DEK), so renaming a document never re-uploads it.
+ */
+export async function updateDocument(id: string, formData: FormData): Promise<ActionResult> {
+  return guarded(async () => {
+    const { db, userId, tenantId } = await getContext();
 
-  const rows = await db
-    .select({ storageObjectKey: walletItems.storageObjectKey })
-    .from(walletItems)
-    .where(
-      and(
-        eq(walletItems.id, id),
-        eq(walletItems.tenantId, tenantId),
-        eq(walletItems.ownerUserId, userId),
-        eq(walletItems.kind, 'document'),
-      ),
-    )
-    .limit(1);
-  const row = rows[0];
-  if (!row) return;
+    const encryptedMetadata = formString(formData, 'encryptedMetadata');
+    if (!encryptedMetadata) {
+      return { ok: false as const, error: 'These details could not be encrypted. Please try again.' };
+    }
 
-  if (row.storageObjectKey) {
-    await sdk.storage.delete(row.storageObjectKey);
-  }
-  await db
-    .delete(walletItems)
-    .where(
-      and(
-        eq(walletItems.id, id),
-        eq(walletItems.tenantId, tenantId),
-        eq(walletItems.ownerUserId, userId),
-        eq(walletItems.kind, 'document'),
-      ),
+    const updated = await db
+      .update(walletItems)
+      .set({ encryptedMetadata, updatedAt: now() })
+      .where(
+        and(
+          eq(walletItems.id, id),
+          eq(walletItems.tenantId, tenantId),
+          eq(walletItems.ownerUserId, userId),
+          eq(walletItems.kind, 'document'),
+        ),
+      )
+      .returning({ id: walletItems.id });
+    if (updated.length === 0) {
+      return { ok: false as const, error: 'That document no longer exists.' };
+    }
+
+    revalidatePath('/wallet/documents');
+    revalidatePath(`/wallet/documents/${id}`);
+    return ACTION_OK;
+  }, 'These details could not be saved. Please try again.');
+}
+
+export async function deleteDocument(id: string): Promise<ActionResult> {
+  return guarded(async () => {
+    const { db, userId, tenantId } = await getContext();
+
+    const scope = and(
+      eq(walletItems.id, id),
+      eq(walletItems.tenantId, tenantId),
+      eq(walletItems.ownerUserId, userId),
+      eq(walletItems.kind, 'document'),
     );
+    const rows = await db
+      .select({ storageObjectKey: walletItems.storageObjectKey })
+      .from(walletItems)
+      .where(scope)
+      .limit(1);
+    const row = rows[0];
+    if (!row) return { ok: false as const, error: 'That document no longer exists.' };
 
-  revalidatePath('/wallet');
-  revalidatePath('/wallet/documents');
-  redirect('/wallet/documents');
+    if (row.storageObjectKey) {
+      await sdk.storage.delete(row.storageObjectKey).catch(() => undefined);
+    }
+    await db.delete(walletItems).where(scope);
+
+    revalidatePath('/wallet');
+    revalidatePath('/wallet/documents');
+    return ACTION_OK;
+  }, 'This document could not be deleted. Please try again.');
 }

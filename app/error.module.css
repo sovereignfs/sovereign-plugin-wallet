@@ -1,0 +1,16 @@
+.boundary {
+  display: grid;
+  justify-items: start;
+  gap: var(--sv-space-4);
+  padding: var(--sv-space-5);
+  border: 1px solid var(--sv-color-border);
+  border-radius: var(--sv-radius-lg);
+  background-color: var(--sv-color-surface);
+}
+
+.message {
+  margin: 0;
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-muted);
+  max-width: 52ch;
+}

@@ -10,9 +10,10 @@ import type {
   PluginExportSection,
 } from '@sovereignfs/sdk';
 import { walletCardPayloads, walletItems } from '../_db/schema';
+import { OPAQUE_CONTENT_TYPE, safeImageContentType } from './mediaTypes';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Db = BaseSQLiteDatabase<'async', any, any>;
+/** See the same note in `actions.ts` — this cast is correct on both dialects. */
+type Db = BaseSQLiteDatabase<'async', unknown>;
 
 const PLUGIN_ID = 'fs.sovereign.wallet';
 const EXPORT_SCHEMA_VERSION = 1;
@@ -240,6 +241,59 @@ function isWalletExportData(value: unknown): value is WalletExportData {
   return Array.isArray(candidate.cards) && Array.isArray(candidate.documents);
 }
 
+/**
+ * Per-item validation for an imported bundle.
+ *
+ * A bundle is user-supplied input from another instance, so every row that
+ * reaches an `insert()` is checked first. An item that fails is **skipped**,
+ * not thrown on: import runs without a transaction, so throwing partway
+ * through would leave the user with half their wallet restored and no way to
+ * retry cleanly. Skipping keeps the rest of the restore intact.
+ */
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+function isTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isValidExportCard(value: unknown): value is ExportCardItem {
+  if (!value || typeof value !== 'object') return false;
+  const card = value as Partial<ExportCardItem>;
+  return (
+    isString(card.id) &&
+    isString(card.payload) &&
+    typeof card.payloadEncrypted === 'boolean' &&
+    isNullableString(card.encryptedMetadata) &&
+    isNullableString(card.encryptionVersion) &&
+    isNullableString(card.wrappedDek) &&
+    isNullableString(card.barcodeFormat) &&
+    isNullableString(card.frontImageBlobPath) &&
+    isNullableString(card.backImageBlobPath) &&
+    isTimestamp(card.createdAt) &&
+    isTimestamp(card.updatedAt)
+  );
+}
+
+function isValidExportDocument(value: unknown): value is ExportDocumentItem {
+  if (!value || typeof value !== 'object') return false;
+  const doc = value as Partial<ExportDocumentItem>;
+  return (
+    isString(doc.id) &&
+    isString(doc.encryptedMetadata) &&
+    isString(doc.encryptionVersion) &&
+    isString(doc.wrappedDek) &&
+    isString(doc.blobPath) &&
+    isTimestamp(doc.createdAt) &&
+    isTimestamp(doc.updatedAt)
+  );
+}
+
 async function importWalletData(section: PluginExportSection, ctx: ImportContext): Promise<void> {
   if (!isWalletExportData(section.data)) {
     throw new Error('Wallet import section has an unrecognized shape.');
@@ -260,19 +314,25 @@ async function importWalletData(section: PluginExportSection, ctx: ImportContext
     if (!bytes) return null;
     const key = `${keyPrefix}/${randomUUID()}`;
     const encrypted = Boolean(meta?.iv && meta.blobAlgorithmVersion);
+    // A bundle is user-supplied input from another instance, so its declared
+    // content type goes through the same allowlist as a fresh upload — the
+    // signed-download route echoes whatever is stored here straight into a
+    // `Content-Type` header, outside the proxy's CSP (see `mediaTypes.ts`).
+    const contentType = safeImageContentType(meta?.contentType);
     await sdk.storage.put({
       key,
       body: bytes,
-      contentType: encrypted ? 'application/octet-stream' : (meta?.contentType ?? 'application/octet-stream'),
+      contentType: encrypted ? OPAQUE_CONTENT_TYPE : contentType,
       ownerUserId: ctx.userId,
       metadata: encrypted
-        ? { iv: meta?.iv, blobAlgorithmVersion: meta?.blobAlgorithmVersion, contentType: meta?.contentType }
+        ? { iv: meta?.iv, blobAlgorithmVersion: meta?.blobAlgorithmVersion, contentType }
         : null,
     });
     return key;
   }
 
   for (const card of data.cards) {
+    if (!isValidExportCard(card)) continue;
     const newItemId = ctx.remapId(card.id);
     const [frontImageKey, backImageKey] = await Promise.all([
       reuploadBlob(card.frontImageBlobPath, 'cards', card.frontImageMeta),
@@ -284,6 +344,7 @@ async function importWalletData(section: PluginExportSection, ctx: ImportContext
       tenantId: ctx.tenantId,
       ownerUserId: ctx.userId,
       kind: 'card',
+      kindHint: card.barcodeFormat,
       encryptedMetadata: card.encryptedMetadata,
       encryptionVersion: card.encryptionVersion,
       wrappedDek: card.wrappedDek,
@@ -306,6 +367,7 @@ async function importWalletData(section: PluginExportSection, ctx: ImportContext
   }
 
   for (const doc of data.documents) {
+    if (!isValidExportDocument(doc)) continue;
     const newItemId = ctx.remapId(doc.id);
     const storageObjectKey = await reuploadBlob(doc.blobPath, 'documents', doc.blobMeta);
     if (!storageObjectKey) continue; // bundle is missing the ciphertext bytes — skip rather than create a dangling row
@@ -315,6 +377,7 @@ async function importWalletData(section: PluginExportSection, ctx: ImportContext
       tenantId: ctx.tenantId,
       ownerUserId: ctx.userId,
       kind: 'document',
+      kindHint: 'document',
       storageObjectKey,
       encryptedMetadata: doc.encryptedMetadata,
       encryptionVersion: doc.encryptionVersion,

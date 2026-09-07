@@ -1,47 +1,45 @@
-import { getTableName, type Table } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeFakeDb, type Row } from './fake-db';
 
-type Row = Record<string, unknown>;
-type Condition = { kind: 'eq'; key: string; value: unknown } | { kind: 'and'; conditions: Condition[] };
-
-function toCamel(snake: string): string {
-  return snake.replace(/_([a-z0-9])/g, (_match, c: string) => c.toUpperCase());
-}
-
-// Same harness as portability.test.ts — mocks eq()/and() into an
-// interpretable Condition tree so the fake db can actually filter rows,
-// which is what a tenant/owner-scoping test sweep needs to be meaningful
-// (a stub that always returns everything would prove nothing).
+// Inlined rather than imported from `./fake-db`: `vi.mock` is hoisted above
+// the imports, so referencing that module here (it imports `drizzle-orm`
+// itself) fails with "Cannot access '__vi_import_0__' before initialization".
 vi.mock('drizzle-orm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('drizzle-orm')>();
+  const camel = (snake: string) => snake.replace(/_([a-z0-9])/g, (_m, c: string) => c.toUpperCase());
   return {
     ...actual,
-    eq: (column: { name: string }, value: unknown): Condition => ({
+    eq: (column: { name: string }, value: unknown) => ({
       kind: 'eq',
-      key: toCamel(column.name),
+      key: camel(column.name),
       value,
     }),
-    and: (...conditions: Condition[]): Condition => ({ kind: 'and', conditions }),
+    and: (...conditions: unknown[]) => ({ kind: 'and', conditions }),
   };
 });
 
-function matches(row: Row, condition?: Condition): boolean {
-  if (!condition) return true;
-  if (condition.kind === 'eq') return row[condition.key] === condition.value;
-  return condition.conditions.every((c) => matches(row, c));
-}
+// `revalidatePath` throws outside a request scope ("static generation store
+// missing"). Stubbing it keeps these unit tests about the action's own logic.
+vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 let sessionUserId = 'user-1';
 let sessionTenantId = 't1';
 
+const storagePut = vi.fn(async () => undefined);
+const storageDelete = vi.fn(async () => undefined);
+
 vi.mock('@sovereignfs/sdk', () => ({
   sdk: {
-    auth: { requireSession: vi.fn(async () => ({ user: { id: sessionUserId, tenantId: sessionTenantId } })) },
+    auth: {
+      requireSession: vi.fn(async () => ({
+        user: { id: sessionUserId, tenantId: sessionTenantId },
+      })),
+    },
     db: { getClient: vi.fn(async () => fakeDb) },
     storage: {
-      put: vi.fn(async () => undefined),
+      put: (...args: unknown[]) => storagePut(...(args as [])),
       get: vi.fn(async () => null),
-      delete: vi.fn(async () => undefined),
+      delete: (...args: unknown[]) => storageDelete(...(args as [])),
       getSignedUrl: vi.fn(async () => 'https://example.test/signed'),
     },
   },
@@ -53,86 +51,7 @@ interface Store extends Record<string, Row[]> {
 }
 
 let store: Store = { wallet_items: [], wallet_card_payloads: [] };
-
-function resetStore() {
-  store = { wallet_items: [], wallet_card_payloads: [] };
-}
-
-function project(rows: Row[], columns?: Record<string, unknown>): Row[] {
-  if (!columns) return rows;
-  return rows.map((row) => {
-    const projected: Row = {};
-    for (const key of Object.keys(columns)) projected[key] = row[key];
-    return projected;
-  });
-}
-
-function whereChain(rows: Row[], columns: Record<string, unknown> | undefined) {
-  return {
-    where: (condition?: Condition) => {
-      const filtered = rows.filter((row) => matches(row, condition));
-      const projected = project(filtered, columns);
-      return Object.assign(Promise.resolve(projected), {
-        limit: (_n: number) => Promise.resolve(projected),
-        returning: (_cols: unknown) => Promise.resolve(projected),
-      });
-    },
-  };
-}
-
-const fakeDb = {
-  select(columns?: Record<string, unknown>) {
-    return {
-      from(table: Table) {
-        const tableName = getTableName(table);
-        const rows = store[tableName] ?? [];
-        return {
-          ...whereChain(rows, columns),
-          innerJoin: (joinTable: Table, _on: unknown) => {
-            const joinName = getTableName(joinTable);
-            const joined = rows.map((row) => {
-              const match = (store[joinName] ?? []).find((r) => r.itemId === row.id);
-              return { ...match, ...row };
-            });
-            return whereChain(joined, columns);
-          },
-        };
-      },
-    };
-  },
-  insert(table: Table) {
-    const tableName = getTableName(table);
-    return {
-      values: async (row: Row) => {
-        (store[tableName] ??= []).push(row);
-      },
-    };
-  },
-  update(table: Table) {
-    const tableName = getTableName(table);
-    return {
-      set: (patch: Row) => ({
-        where: (condition?: Condition) => {
-          const matched = (store[tableName] ?? []).filter((row) => matches(row, condition));
-          store[tableName] = (store[tableName] ?? []).map((row) =>
-            matches(row, condition) ? { ...row, ...patch } : row,
-          );
-          return Object.assign(Promise.resolve(matched), {
-            returning: (_cols: unknown) => Promise.resolve(matched),
-          });
-        },
-      }),
-    };
-  },
-  delete(table: Table) {
-    const tableName = getTableName(table);
-    return {
-      where: async (condition?: Condition) => {
-        store[tableName] = (store[tableName] ?? []).filter((row) => !matches(row, condition));
-      },
-    };
-  },
-};
+const fakeDb = makeFakeDb(() => store);
 
 function seedCard(overrides: Partial<Row> = {}) {
   store.wallet_items.push({
@@ -140,7 +59,7 @@ function seedCard(overrides: Partial<Row> = {}) {
     tenantId: 't1',
     ownerUserId: 'user-1',
     kind: 'card',
-    kindHint: null,
+    kindHint: 'qr',
     storageObjectKey: null,
     encryptionVersion: null,
     encryptedMetadata: JSON.stringify({ title: 'Costco', issuer: '', notes: '' }),
@@ -165,9 +84,30 @@ function seedCard(overrides: Partial<Row> = {}) {
   });
 }
 
+/** A card already encrypted, as `createCard` would have written it. */
+function seedEncryptedCard() {
+  const cipher = JSON.stringify({ ciphertext: 'c', iv: 'i', algorithmVersion: 'v1' });
+  seedCard({
+    encryptionVersion: 'v1',
+    encryptedMetadata: cipher,
+    wrappedDek: JSON.stringify({ wrappedDek: 'wrapped', algorithmVersion: 'v1' }),
+    payloadEncrypted: true,
+    payload: cipher,
+  });
+}
+
+function cardForm(fields: Record<string, string> = {}): FormData {
+  const formData = new FormData();
+  formData.set('title', 'Costco');
+  formData.set('payload', '1234');
+  formData.set('barcodeFormat', 'qr');
+  for (const [key, value] of Object.entries(fields)) formData.set(key, value);
+  return formData;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  resetStore();
+  store = { wallet_items: [], wallet_card_payloads: [] };
   sessionUserId = 'user-1';
   sessionTenantId = 't1';
 });
@@ -189,28 +129,36 @@ describe('tenant/owner scoping — getCard', () => {
     expect(await getCard('card-1')).toBeNull();
   });
 
-  it("returns the card for its actual owner in its actual tenant", async () => {
+  it('returns the card for its actual owner in its actual tenant', async () => {
     const { getCard } = await import('../actions');
     seedCard();
 
     const card = await getCard('card-1');
     expect(card?.id).toBe('card-1');
   });
+
+  it('reports an encrypted card with unparseable cipher columns as encrypted-but-unopenable', async () => {
+    const { getCard } = await import('../actions');
+    seedCard({ encryptionVersion: 'v1', encryptedMetadata: 'not json', wrappedDek: 'not json' });
+
+    // Must not throw: a 500 here is a detail page the owner can never open
+    // again. `cipher: null` drives the "can't be opened" state instead.
+    const card = await getCard('card-1');
+    expect(card?.encrypted).toBe(true);
+    expect(card?.cipher).toBeNull();
+  });
 });
 
 describe('tenant/owner scoping — updateCard', () => {
-  it("throws and makes no changes when called for another user's card", async () => {
+  it("refuses and makes no changes when called for another user's card", async () => {
     const { updateCard } = await import('../actions');
     seedCard();
     const originalMetadata = store.wallet_items[0]?.encryptedMetadata;
     sessionUserId = 'user-2';
 
-    const formData = new FormData();
-    formData.set('title', 'Hijacked');
-    formData.set('payload', '9999');
-    formData.set('barcodeFormat', 'qr');
+    const result = await updateCard('card-1', cardForm({ title: 'Hijacked', payload: '9999' }));
 
-    await expect(updateCard('card-1', formData)).rejects.toThrow();
+    expect(result.ok).toBe(false);
     expect(store.wallet_items[0]?.encryptedMetadata).toBe(originalMetadata);
   });
 });
@@ -221,10 +169,149 @@ describe('tenant/owner scoping — deleteCard', () => {
     seedCard();
     sessionTenantId = 't2';
 
-    // deleteCard() redirects (throws NEXT_REDIRECT) on success; a
-    // cross-tenant call should leave the row untouched either way.
-    await expect(deleteCard('card-1')).rejects.toThrow();
+    await deleteCard('card-1');
+
     expect(store.wallet_items).toHaveLength(1);
     expect(store.wallet_card_payloads).toHaveLength(1);
+  });
+});
+
+describe('expected failures return a message instead of throwing', () => {
+  it('reports a missing display name', async () => {
+    const { createCard } = await import('../actions');
+    const formData = cardForm();
+    formData.set('title', '');
+
+    const result = await createCard(formData);
+
+    expect(result).toEqual({ ok: false, error: 'Display name is required.' });
+    expect(store.wallet_items).toHaveLength(0);
+  });
+
+  it('reports a missing payload', async () => {
+    const { createCard } = await import('../actions');
+    const formData = cardForm();
+    formData.set('payload', '');
+
+    const result = await createCard(formData);
+
+    expect(result).toEqual({ ok: false, error: 'Card payload is required.' });
+  });
+
+  it('reports an encrypted submission missing its cipher fields', async () => {
+    const { createCard } = await import('../actions');
+    const formData = cardForm({ encrypted: 'true' });
+
+    const result = await createCard(formData);
+
+    expect(result.ok).toBe(false);
+    expect(store.wallet_items).toHaveLength(0);
+  });
+
+  it('returns the new id on success so the client can navigate', async () => {
+    const { createCard } = await import('../actions');
+
+    const result = await createCard(cardForm());
+
+    expect(result.ok).toBe(true);
+    expect(store.wallet_items).toHaveLength(1);
+    expect(store.wallet_card_payloads).toHaveLength(1);
+  });
+});
+
+describe('storage objects are never orphaned by a rejected submission', () => {
+  it('uploads nothing when validation fails', async () => {
+    const { createCard } = await import('../actions');
+    const formData = cardForm();
+    formData.set('title', ''); // fails validation
+    formData.set('frontImage', new File(['bytes'], 'front.png', { type: 'image/png' }));
+
+    const result = await createCard(formData);
+
+    expect(result.ok).toBe(false);
+    // The pre-fix ordering uploaded both images before checking the title,
+    // leaving objects nothing referenced against the user's quota.
+    expect(storagePut).not.toHaveBeenCalled();
+  });
+
+  it("uploads nothing when the caller doesn't own the card being updated", async () => {
+    const { updateCard } = await import('../actions');
+    seedCard();
+    sessionUserId = 'user-2';
+    const formData = cardForm();
+    formData.set('frontImage', new File(['bytes'], 'front.png', { type: 'image/png' }));
+
+    await updateCard('card-1', formData);
+
+    expect(storagePut).not.toHaveBeenCalled();
+  });
+});
+
+describe('card image content types are allowlisted before storage', () => {
+  it('stores a real image type as-is', async () => {
+    const { createCard } = await import('../actions');
+    const formData = cardForm();
+    formData.set('frontImage', new File(['bytes'], 'front.png', { type: 'image/png' }));
+
+    await createCard(formData);
+
+    expect(storagePut).toHaveBeenCalledWith(
+      expect.objectContaining({ contentType: 'image/png' }),
+    );
+  });
+
+  it('degrades a non-image type to an opaque one', async () => {
+    const { createCard } = await import('../actions');
+    const formData = cardForm();
+    // `accept="image/*"` is only a picker filter — a crafted request can
+    // declare anything. Storing `text/html` would have it served back as an
+    // HTML document from the runtime's own origin, outside the CSP.
+    formData.set('frontImage', new File(['<script>'], 'x.html', { type: 'text/html' }));
+
+    await createCard(formData);
+
+    expect(storagePut).toHaveBeenCalledWith(
+      expect.objectContaining({ contentType: 'application/octet-stream' }),
+    );
+  });
+});
+
+describe('encryption columns never survive a plaintext write', () => {
+  it('clears encryption_version and wrapped_dek when a card is saved unencrypted', async () => {
+    const { updateCard, getCard } = await import('../actions');
+    seedEncryptedCard();
+    expect(store.wallet_items[0]?.encryptionVersion).toBe('v1');
+
+    const result = await updateCard('card-1', cardForm({ title: 'Now plaintext' }));
+
+    expect(result.ok).toBe(true);
+    // Leaving these set made `getCard` parse the plaintext payload as
+    // ciphertext on the next read, permanently 500ing that card's page.
+    expect(store.wallet_items[0]?.encryptionVersion).toBeNull();
+    expect(store.wallet_items[0]?.wrappedDek).toBeNull();
+    expect(store.wallet_card_payloads[0]?.payloadEncrypted).toBe(false);
+
+    const card = await getCard('card-1');
+    expect(card?.encrypted).toBe(false);
+    expect(card?.title).toBe('Now plaintext');
+  });
+
+  it('sets them when a plaintext card is upgraded to encrypted', async () => {
+    const { updateCard } = await import('../actions');
+    seedCard();
+
+    const result = await updateCard(
+      'card-1',
+      cardForm({
+        encrypted: 'true',
+        encryptedMetadata: JSON.stringify({ ciphertext: 'c', iv: 'i', algorithmVersion: 'v1' }),
+        encryptedPayload: JSON.stringify({ ciphertext: 'p', iv: 'i', algorithmVersion: 'v1' }),
+        wrappedDek: JSON.stringify({ wrappedDek: 'w', algorithmVersion: 'v1' }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(store.wallet_items[0]?.encryptionVersion).toBe('v1');
+    expect(store.wallet_card_payloads[0]?.payloadEncrypted).toBe(true);
   });
 });

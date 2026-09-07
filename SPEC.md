@@ -59,6 +59,13 @@ Re-checked against the running codebase, not just RFC status headers — RFC
 "Draft" status does not always mean unimplemented; several SDK surfaces are
 ahead of their RFC's paperwork.
 
+> **Superseded for the two rows that mattered.** `sdk.storage` (RFC 0044) and
+> the client-side encryption core (RFC 0060) were both unbuilt when this table
+> was written and have since shipped — that's what unblocked and completed the
+> v0.1 cards & documents track. Their rows below are corrected; the rest of
+> the table has not been re-verified since July 2026, so treat it as dated
+> rather than current.
+
 | Capability | RFC | Status | Notes |
 | --- | --- | --- | --- |
 | `sdk.auth` | — | ✅ Stable | Session boundary. |
@@ -69,8 +76,8 @@ ahead of their RFC's paperwork.
 | `sdk.notifications` | 0015 | ✅ Implemented | In-app/push alerts. |
 | `sdk.connections` | 0049 | ✅ Implemented | `packages/sdk/src/connections.ts` — real host-backed CRUD + OAuth state, despite RFC 0049 still reading "Draft". |
 | `sdk.portability` (export/import/delete) | 0007 | ✅ Implemented | Epic 8.2 ✅; already supports `blobs` in export sections and a `DeletionHandler`. RFC 0052 ("Plugin portability hooks", still Draft, epic 8.8 still 📋) proposes richer hooks, but the existing surface already covers what both Wallet tracks need. |
-| `sdk.storage` | 0044 | ❌ Stub | `packages/sdk/src/unimplemented.ts` — `put()`/`get()` throw `NotImplementedError`. Epic 8.7 still 📋. |
-| Client-side encryption core (`sdk.crypto.client` / `sdk.e2ee`) | 0060 | ❌ Missing | Draft RFC only, no code. Epic 8.9 still 📋. |
+| `sdk.storage` | 0044 | ✅ Implemented | Shipped in W-01: `put`/`get`/`delete`/`list`/`getSignedUrl`, `plugin_storage_objects`, signed-download route. Epic 8.7 ✅. |
+| Client-side encryption core (`sdk.e2ee`) | 0060 | ✅ Implemented | Shipped across W-02–W-06; the name question resolved to `sdk.e2ee`. Epic 8.9 ✅. |
 | Plugin-scoped roles/grants | 0054 | ❌ Missing | Needed for future shared wallets / accountant access. |
 | Public plugin webhooks | 0050 | ❌ Missing | Needed only for payment-provider callbacks (ledger v0.5), far downstream. |
 | Public plugin page routes | 0042 | ❌ Missing | Neither track needs public routes in v1 — both are explicitly "no public UI". |
@@ -114,9 +121,9 @@ was still chosen as phase 1 despite the extra platform lift.
 | `shell`                             | `default`                                                    |
 | `adminOnly`                         | omitted (`false`)                                            |
 | `icon`                              | `icon.svg`                                                   |
-| `permissions`                       | `auth:session`, `db:readWrite`                                |
+| `permissions`                       | `auth:session`, `db:readWrite`, `e2ee:use`, `storage:readWrite`, `data:export`, `data:import` |
 | `repository`                        | `https://github.com/sovereignfs/sovereign-plugin-wallet`             |
-| `compatibility.minPlatformVersion`  | `0.19.0` (raised once RFC 0060 + RFC 0044 land — see roadmap) |
+| `compatibility.minPlatformVersion`  | `0.24.0` (raised when RFC 0044 + RFC 0060 landed, as planned) |
 
 `id: fs.sovereign.wallet` replaces the original proposal's
 `io.openfs.sovereign.wallet`, for consistency with Sovereign Docs'
@@ -214,7 +221,7 @@ from the original proposal's `WLT-01..36` to avoid collision).
 | WLT-05 | Locked-state UI path when a card payload is encrypted. |
 | WLT-06 | Sensitive-document upload gated on client-side encryption setup being complete. |
 | WLT-07 | Browser-side binary encryption of document images before upload; ciphertext via `sdk.storage`; plaintext bytes never reach the runtime. |
-| WLT-08 | Human-readable document metadata (title, issuer, doc type, country, number, filename, notes) stored encrypted. |
+| WLT-08 | Human-readable document metadata (title, issuer, doc type, country, number, filename, notes) stored encrypted. Only `title` is required; the rest are optional per document. |
 | WLT-09 | Browser-side decrypt-and-display flow using Blob URLs. |
 | WLT-10 | Locked/recovery UX explaining data-loss implications before upload. |
 | WLT-11 | Export hook: encrypted metadata, wrapped keys, ciphertext storage objects. |

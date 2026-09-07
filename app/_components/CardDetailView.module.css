@@ -41,9 +41,30 @@
 }
 
 .encryptedBadge {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
   font-size: var(--sv-font-size-sm);
   color: var(--sv-color-text-muted);
   margin: 0;
+}
+
+.scanActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-2);
+}
+
+/* Pending states render in place of the card body, so they need enough
+   height not to collapse the layout while decryption runs. */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sv-space-3);
+  min-height: 200px;
+  font-size: var(--sv-font-size-sm);
+  color: var(--sv-color-text-muted);
 }
 
 .images {

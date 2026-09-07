@@ -1,0 +1,37 @@
+/* Deliberately theme-independent: a scanner reads contrast, not the viewer's
+   colour-scheme preference, so this stage stays light in dark mode. That's
+   why it uses the `--sv-white`/`--sv-black` *primitives* directly instead of
+   the semantic surface/text tokens, which swap under `[data-theme]`. */
+.stage {
+  display: grid;
+  justify-items: center;
+  gap: var(--sv-space-4);
+  padding: var(--sv-space-6) var(--sv-space-4);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-white);
+  color: var(--sv-black);
+}
+
+.stage canvas,
+.stage svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.payload {
+  margin: 0;
+  font-family: var(--sv-font-family-mono);
+  font-size: var(--sv-font-size-lg);
+  letter-spacing: 0.08em;
+  text-align: center;
+  word-break: break-all;
+  color: var(--sv-black);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-2);
+  justify-content: flex-end;
+  padding-top: var(--sv-space-4);
+}

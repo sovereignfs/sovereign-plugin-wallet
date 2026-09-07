@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { registerPortabilityHandlers } from './_lib/portability';
+import { WalletE2eeProvider } from './_lib/useE2eeUnlock';
 
 export default async function WalletLayout({ children }: { children: ReactNode }) {
   // In-process and reset on restart — the platform SDK requires
@@ -12,5 +13,7 @@ export default async function WalletLayout({ children }: { children: ReactNode }
     // best-effort platform integration
   }
 
-  return children;
+  // One unlock check per page, shared by every consumer below (list tiles,
+  // upload gate, detail views) instead of one per component.
+  return <WalletE2eeProvider>{children}</WalletE2eeProvider>;
 }

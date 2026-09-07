@@ -17,9 +17,9 @@ export default async function CardsPage() {
 
       {cards.length === 0 ? (
         <EmptyState
-          icon="package"
+          icon="credit-card"
           heading="No cards yet"
-          description="Add your first loyalty or membership card."
+          description="Add a loyalty or membership card to keep its barcode one tap away at the till."
         />
       ) : (
         <CardsListView cards={cards} />

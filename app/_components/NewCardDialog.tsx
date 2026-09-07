@@ -1,22 +1,29 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button, Dialog, FormField, Input, Select, Textarea } from '@sovereignfs/ui';
-import { generateDek, wrapDekWithCmk } from '@sovereignfs/sdk/e2ee-crypto';
-import { encryptJson } from '@sovereignfs/sdk/e2ee-object';
 import { createCard } from '../_lib/actions';
-import { appendCardImage, cardImageBudget, compressCardImagesInForm } from '../_lib/cardImageForm';
+import { buildCardFormData } from '../_lib/cardImageForm';
 import { useE2eeUnlock } from '../_lib/useE2eeUnlock';
+import { BARCODE_FORMAT_OPTIONS } from '../_lib/barcodeFormats';
 import { FileField } from './FileField';
 import styles from './CardForm.module.css';
 
 export function NewCardDialog() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [encrypt, setEncrypt] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const unlock = useE2eeUnlock();
   const canEncrypt = unlock.state === 'unlocked';
+
+  function close() {
+    setOpen(false);
+    setError(null);
+    setEncrypt(false);
+  }
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -28,43 +35,34 @@ export function NewCardDialog() {
     if (!payload) return setError('Card payload is required.');
 
     startTransition(async () => {
-      if (encrypt && canEncrypt && unlock.cmk) {
-        try {
-          const dek = await generateDek();
-          const wrappedDek = await wrapDekWithCmk(dek, unlock.cmk);
-          const encryptedMetadata = await encryptJson(dek, {
-            title,
-            issuer: String(formData.get('issuer') ?? '').trim(),
-            notes: String(formData.get('notes') ?? '').trim(),
-          });
-          const encryptedPayload = await encryptJson(dek, payload);
-
-          const encryptedForm = new FormData();
-          encryptedForm.set('barcodeFormat', String(formData.get('barcodeFormat') ?? ''));
-          encryptedForm.set('encrypted', 'true');
-          encryptedForm.set('encryptedMetadata', JSON.stringify(encryptedMetadata));
-          encryptedForm.set('encryptedPayload', JSON.stringify(encryptedPayload));
-          encryptedForm.set('wrappedDek', JSON.stringify(wrappedDek));
-          const budget = cardImageBudget(formData);
-          await appendCardImage(formData, encryptedForm, 'front', dek, budget);
-          await appendCardImage(formData, encryptedForm, 'back', dek, budget);
-          await createCard(encryptedForm);
-        } catch {
-          setError('Something went wrong encrypting this card. Please try again.');
-        }
+      // If the user asked for encryption, it happens or the card is not
+      // saved. Falling through to the plaintext path when the CMK went away
+      // between render and submit would silently store the payload, issuer
+      // and notes in the clear on a card the user explicitly marked private.
+      if (encrypt && !unlock.cmk) {
+        setError(
+          'Encryption isn’t unlocked on this device any more, so this card wasn’t saved. Unlock it in Account → Security and try again.',
+        );
         return;
       }
-      await compressCardImagesInForm(formData);
-      await createCard(formData);
+
+      const built = await buildCardFormData(formData, encrypt ? unlock.cmk : null);
+      if (!built.ok) return setError(built.error);
+
+      const result = await createCard(built.formData);
+      if (!result.ok) return setError(result.error);
+      close();
+      router.push(`/wallet/cards/${result.id}`);
+      router.refresh();
     });
   }
 
   return (
     <>
       <Button type="button" onClick={() => setOpen(true)}>
-        + Add card
+        Add card
       </Button>
-      <Dialog open={open} onClose={() => setOpen(false)} size="md" title="Add card">
+      <Dialog open={open} onClose={close} size="md" title="Add card">
         <form onSubmit={handleSubmit} className={styles.form}>
           <FormField label="Display name" required>
             {(field) => <Input {...field} name="title" required placeholder="Coffee rewards" />}
@@ -75,12 +73,11 @@ export function NewCardDialog() {
           <FormField label="Barcode format">
             {(field) => (
               <Select {...field} name="barcodeFormat" defaultValue="qr">
-                <option value="qr">QR code</option>
-                <option value="code128">Code 128</option>
-                <option value="code39">Code 39</option>
-                <option value="ean13">EAN-13</option>
-                <option value="upc">UPC</option>
-                <option value="other">Other</option>
+                {BARCODE_FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </Select>
             )}
           </FormField>
@@ -109,7 +106,7 @@ export function NewCardDialog() {
             />{' '}
             Encrypt this card
           </label>
-          {!canEncrypt && (
+          {unlock.state !== 'checking' && !canEncrypt && (
             <p className={styles.help}>
               Set up client-side encryption in Account → Security to encrypt cards. Loyalty cards
               are private either way — encryption additionally protects them from the operator or
@@ -117,14 +114,18 @@ export function NewCardDialog() {
             </p>
           )}
           {canEncrypt && encrypt && (
-            <p className={styles.help}>
+            <p className={styles.encryptWarning}>
               This card will only be readable on devices where you&rsquo;ve unlocked encryption. If
               you lose your recovery secret and every enrolled device, it can&rsquo;t be recovered.
             </p>
           )}
-          {error && <p className={styles.error}>{error}</p>}
+          {error && (
+            <p className={styles.error} role="status" aria-live="polite">
+              {error}
+            </p>
+          )}
           <div className={styles.actions}>
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
+            <Button type="button" variant="secondary" onClick={close}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>

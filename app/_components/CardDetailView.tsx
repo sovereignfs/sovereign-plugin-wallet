@@ -2,26 +2,32 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Button,
   Card,
   ConfirmDialog,
   FormField,
+  Icon,
   Input,
   PageHeader,
   Select,
+  Spinner,
   Textarea,
 } from '@sovereignfs/ui';
+import { unwrapDekWithCmk } from '@sovereignfs/sdk/e2ee-crypto';
+import { decryptJson } from '@sovereignfs/sdk/e2ee-object';
 import type { CardDetail } from '../_lib/actions';
 import { deleteCard, updateCard } from '../_lib/actions';
-import { unwrapDekWithCmk } from '@sovereignfs/sdk/e2ee-crypto';
-import { decryptJson, encryptJson } from '@sovereignfs/sdk/e2ee-object';
-import { barcodeFormatLabel } from '../_lib/barcodeFormats';
-import { appendCardImage, cardImageBudget, compressCardImagesInForm } from '../_lib/cardImageForm';
+import { BARCODE_FORMAT_OPTIONS, barcodeFormatLabel } from '../_lib/barcodeFormats';
+import { buildCardFormData } from '../_lib/cardImageForm';
 import { useE2eeUnlock } from '../_lib/useE2eeUnlock';
 import { useDecryptedImage } from '../_lib/useDecryptedImage';
 import { CodeDisplay } from './CodeDisplay';
+import { CopyButton } from './CopyButton';
 import { FileField } from './FileField';
+import { ScanView } from './ScanView';
+import { Timestamps } from './Timestamps';
 import styles from './CardDetailView.module.css';
 import formStyles from './CardForm.module.css';
 
@@ -32,6 +38,16 @@ interface DecryptedCard {
   payload: string;
 }
 
+/** A locked/undecryptable card's whole-page state — no content, one explanation. */
+function CardNotice({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <>
+      <PageHeader title={title} />
+      <Card className={styles.card}>{children}</Card>
+    </>
+  );
+}
+
 /**
  * Renders a card's detail view. For an encrypted card, nothing is decrypted
  * until this device's CMK is unlocked (`useE2eeUnlock`) — the server never
@@ -39,11 +55,15 @@ interface DecryptedCard {
  * instead of the card content when it isn't unlocked (RFC 0060).
  */
 export function CardDetailView({ card }: { card: CardDetail }) {
+  const router = useRouter();
   const [editing, setEditing] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deletePending, startDelete] = useTransition();
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savePending, startSave] = useTransition();
+  const [encryptOnSave, setEncryptOnSave] = useState(false);
 
   const unlock = useE2eeUnlock();
   const [dek, setDek] = useState<CryptoKey | null>(null);
@@ -53,7 +73,14 @@ export function CardDetailView({ card }: { card: CardDetail }) {
   const backImageUrl = useDecryptedImage(card.backImage, card.encrypted ? dek : null);
 
   useEffect(() => {
-    if (!card.encrypted || !card.cipher) return;
+    if (!card.encrypted) return;
+    // A row flagged encrypted whose cipher columns didn't parse can never be
+    // decrypted — surface it as the same "can't open" state rather than
+    // spinning forever waiting for a decryption that will never start.
+    if (!card.cipher) {
+      setDecryptError(true);
+      return;
+    }
     if (unlock.state !== 'unlocked' || !unlock.cmk) return;
     const cipher = card.cipher;
     const cmk = unlock.cmk;
@@ -79,8 +106,16 @@ export function CardDetailView({ card }: { card: CardDetail }) {
   }, [card, unlock.state, unlock.cmk]);
 
   function handleDelete() {
+    setDeleteError(null);
     startDelete(async () => {
-      await deleteCard(card.id);
+      const result = await deleteCard(card.id);
+      if (!result.ok) {
+        setDeleteConfirmOpen(false);
+        setDeleteError(result.error);
+        return;
+      }
+      router.push('/wallet/cards');
+      router.refresh();
     });
   }
 
@@ -94,72 +129,78 @@ export function CardDetailView({ card }: { card: CardDetail }) {
     if (!payload) return setSaveError('Card payload is required.');
 
     startSave(async () => {
+      let built;
       if (card.encrypted && card.cipher) {
         if (!dek) {
           setSaveError('Encryption key is not available. Please reload and try again.');
           return;
         }
-        try {
-          const encryptedMetadata = await encryptJson(dek, {
-            title,
-            issuer: String(formData.get('issuer') ?? '').trim(),
-            notes: String(formData.get('notes') ?? '').trim(),
-          });
-          const encryptedPayload = await encryptJson(dek, payload);
-          const encryptedForm = new FormData();
-          encryptedForm.set('barcodeFormat', String(formData.get('barcodeFormat') ?? ''));
-          encryptedForm.set('encrypted', 'true');
-          encryptedForm.set('encryptedMetadata', JSON.stringify(encryptedMetadata));
-          encryptedForm.set('encryptedPayload', JSON.stringify(encryptedPayload));
-          encryptedForm.set('wrappedDek', JSON.stringify(card.cipher.wrappedDek));
-          const budget = cardImageBudget(formData);
-          await appendCardImage(formData, encryptedForm, 'front', dek, budget);
-          await appendCardImage(formData, encryptedForm, 'back', dek, budget);
-          await updateCard(card.id, encryptedForm);
-          setEditing(false);
-        } catch {
-          setSaveError('Something went wrong encrypting this card. Please try again.');
+        built = await buildCardFormData(formData, null, { dek, wrappedDek: card.cipher.wrappedDek });
+      } else if (encryptOnSave) {
+        // Upgrading a plaintext card to an encrypted one. Same rule as
+        // creation: if the key vanished, refuse rather than quietly saving
+        // the card in the clear.
+        if (!unlock.cmk) {
+          setSaveError(
+            'Encryption isn’t unlocked on this device any more, so nothing was saved. Unlock it in Account → Security and try again.',
+          );
+          return;
         }
-        return;
+        built = await buildCardFormData(formData, unlock.cmk);
+      } else {
+        built = await buildCardFormData(formData, null);
       }
-      await compressCardImagesInForm(formData);
-      await updateCard(card.id, formData);
+
+      if (!built.ok) return setSaveError(built.error);
+      const result = await updateCard(card.id, built.formData);
+      if (!result.ok) return setSaveError(result.error);
       setEditing(false);
+      setEncryptOnSave(false);
+      router.refresh();
     });
   }
 
   if (card.encrypted) {
-    if (unlock.state === 'checking') return null;
-    if (unlock.state !== 'unlocked') {
+    if (unlock.state === 'checking') {
       return (
-        <>
-          <PageHeader title="🔒 Encrypted card" />
-          <Card className={styles.card}>
-            <p className={formStyles.help}>
-              This card is encrypted.{' '}
-              <Link href="/account/security" className={styles.inlineLink}>
-                Unlock client-side encryption in Account → Security
-              </Link>{' '}
-              to view it.
-            </p>
-          </Card>
-        </>
+        <div className={styles.loading} role="status" aria-live="polite">
+          <Spinner />
+          <span>Checking encryption…</span>
+        </div>
       );
     }
     if (decryptError) {
       return (
-        <>
-          <PageHeader title="🔒 Encrypted card" />
-          <Card className={styles.card}>
-            <p className={formStyles.error}>
-              Could not decrypt this card on this device. Try unlocking with the recovery secret
-              or another enrolled device.
-            </p>
-          </Card>
-        </>
+        <CardNotice title="Encrypted card">
+          <p className={formStyles.error} role="status">
+            This card can&rsquo;t be opened with your current encryption key. That happens if it
+            came from another account&rsquo;s backup, or if encryption was reset since it was
+            saved — it can only be opened with the recovery secret it was created under.
+          </p>
+        </CardNotice>
       );
     }
-    if (!decrypted) return null; // briefly decrypting
+    if (unlock.state !== 'unlocked') {
+      return (
+        <CardNotice title="Encrypted card">
+          <p className={formStyles.help}>
+            This card is encrypted.{' '}
+            <Link href="/account/security" className={styles.inlineLink}>
+              Unlock client-side encryption in Account → Security
+            </Link>{' '}
+            to view it.
+          </p>
+        </CardNotice>
+      );
+    }
+    if (!decrypted) {
+      return (
+        <div className={styles.loading} role="status" aria-live="polite">
+          <Spinner />
+          <span>Decrypting…</span>
+        </div>
+      );
+    }
   }
 
   const display = card.encrypted && decrypted ? decrypted : card;
@@ -170,64 +211,92 @@ export function CardDetailView({ card }: { card: CardDetail }) {
         <PageHeader title={display.title || 'Untitled card'} />
         <Card>
           <form onSubmit={handleSubmit} className={formStyles.form}>
-          <FormField label="Display name" required>
-            {(field) => <Input {...field} name="title" required defaultValue={display.title} />}
-          </FormField>
-          <FormField label="Issuer">
-            {(field) => <Input {...field} name="issuer" defaultValue={display.issuer} />}
-          </FormField>
-          <FormField label="Barcode format">
-            {(field) => (
-              <Select {...field} name="barcodeFormat" defaultValue={card.barcodeFormat ?? 'qr'}>
-                <option value="qr">QR code</option>
-                <option value="code128">Code 128</option>
-                <option value="code39">Code 39</option>
-                <option value="ean13">EAN-13</option>
-                <option value="upc">UPC</option>
-                <option value="other">Other</option>
-              </Select>
+            <FormField label="Display name" required>
+              {(field) => <Input {...field} name="title" required defaultValue={display.title} />}
+            </FormField>
+            <FormField label="Issuer">
+              {(field) => <Input {...field} name="issuer" defaultValue={display.issuer} />}
+            </FormField>
+            <FormField label="Barcode format">
+              {(field) => (
+                <Select {...field} name="barcodeFormat" defaultValue={card.barcodeFormat ?? 'qr'}>
+                  {BARCODE_FORMAT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </FormField>
+            <FormField
+              label="Card payload"
+              required
+              hint="The value encoded in the barcode/QR code."
+            >
+              {(field) => (
+                <Textarea {...field} name="payload" required rows={2} defaultValue={display.payload} />
+              )}
+            </FormField>
+            <FormField label="Notes">
+              {(field) => <Textarea {...field} name="notes" rows={3} defaultValue={display.notes} />}
+            </FormField>
+            <FormField
+              label="Front image"
+              hint={card.frontImage ? 'Replace the current image.' : 'Optional.'}
+            >
+              {(field) => (
+                <FileField field={field} name="frontImage" accept="image/*" hint="Image file" />
+              )}
+            </FormField>
+            <FormField
+              label="Back image"
+              hint={card.backImage ? 'Replace the current image.' : 'Optional.'}
+            >
+              {(field) => (
+                <FileField field={field} name="backImage" accept="image/*" hint="Image file" />
+              )}
+            </FormField>
+
+            {!card.encrypted && (
+              <>
+                <label className={formStyles.encryptOption}>
+                  <input
+                    type="checkbox"
+                    checked={encryptOnSave}
+                    disabled={unlock.state !== 'unlocked'}
+                    onChange={(e) => setEncryptOnSave(e.currentTarget.checked)}
+                  />{' '}
+                  Encrypt this card
+                </label>
+                {unlock.state !== 'unlocked' && unlock.state !== 'checking' && (
+                  <p className={formStyles.help}>
+                    Set up client-side encryption in Account → Security to encrypt this card.
+                  </p>
+                )}
+                {encryptOnSave && (
+                  <p className={formStyles.encryptWarning}>
+                    Saving will encrypt this card. It will then only be readable on devices where
+                    you&rsquo;ve unlocked encryption, and can&rsquo;t be recovered without your
+                    recovery secret.
+                  </p>
+                )}
+              </>
             )}
-          </FormField>
-          <FormField label="Card payload" required hint="The value encoded in the barcode/QR code.">
-            {(field) => (
-              <Textarea
-                {...field}
-                name="payload"
-                required
-                rows={2}
-                defaultValue={display.payload}
-              />
+
+            {saveError && (
+              <p className={formStyles.error} role="status" aria-live="polite">
+                {saveError}
+              </p>
             )}
-          </FormField>
-          <FormField label="Notes">
-            {(field) => <Textarea {...field} name="notes" rows={3} defaultValue={display.notes} />}
-          </FormField>
-          <FormField
-            label="Front image"
-            hint={card.frontImage ? 'Replace the current image.' : 'Optional.'}
-          >
-            {(field) => (
-              <FileField field={field} name="frontImage" accept="image/*" hint="Image file" />
-            )}
-          </FormField>
-          <FormField
-            label="Back image"
-            hint={card.backImage ? 'Replace the current image.' : 'Optional.'}
-          >
-            {(field) => (
-              <FileField field={field} name="backImage" accept="image/*" hint="Image file" />
-            )}
-          </FormField>
-          {saveError && <p className={formStyles.error}>{saveError}</p>}
-          <div className={formStyles.actions}>
-            <Button type="button" variant="secondary" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={savePending}>
-              {savePending ? 'Saving…' : 'Save'}
-            </Button>
-          </div>
-        </form>
+            <div className={formStyles.actions}>
+              <Button type="button" variant="secondary" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={savePending}>
+                {savePending ? 'Saving…' : 'Save'}
+              </Button>
+            </div>
+          </form>
         </Card>
       </>
     );
@@ -237,8 +306,19 @@ export function CardDetailView({ card }: { card: CardDetail }) {
     <>
       <PageHeader title={display.title || 'Untitled card'} />
       <Card className={styles.card}>
-        {card.encrypted && <p className={styles.encryptedBadge}>🔒 Encrypted</p>}
+        {card.encrypted && (
+          <p className={styles.encryptedBadge}>
+            <Icon name="lock" size="sm" aria-hidden />
+            Encrypted
+          </p>
+        )}
         <CodeDisplay format={card.barcodeFormat} payload={display.payload} />
+        <div className={styles.scanActions}>
+          <Button type="button" onClick={() => setScanning(true)}>
+            Show for scanning
+          </Button>
+          <CopyButton value={display.payload} label="Copy number" />
+        </div>
         {(frontImageUrl || backImageUrl) && (
           <div className={styles.images}>
             {frontImageUrl && <img src={frontImageUrl} alt="Card front" className={styles.image} />}
@@ -263,6 +343,12 @@ export function CardDetailView({ card }: { card: CardDetail }) {
             <dd>{display.notes || '—'}</dd>
           </div>
         </dl>
+        <Timestamps createdAt={card.createdAt} updatedAt={card.updatedAt} />
+        {deleteError && (
+          <p className={formStyles.error} role="status" aria-live="polite">
+            {deleteError}
+          </p>
+        )}
         <div className={styles.actions}>
           <Button type="button" variant="secondary" onClick={() => setEditing(true)}>
             Edit
@@ -272,6 +358,13 @@ export function CardDetailView({ card }: { card: CardDetail }) {
           </Button>
         </div>
       </Card>
+      <ScanView
+        open={scanning}
+        onClose={() => setScanning(false)}
+        title={display.title || 'Untitled card'}
+        format={card.barcodeFormat}
+        payload={display.payload}
+      />
       <ConfirmDialog
         open={deleteConfirmOpen}
         title="Delete this card?"
